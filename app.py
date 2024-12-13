@@ -28,7 +28,7 @@ def str_to_bool(str_input):
 openai_api_key = os.environ.get("OPENAI_API_KEY")
 instructions = os.environ.get("RUN_INSTRUCTIONS", "")
 enabled_file_upload_message = os.environ.get(
-    "ENABLED_FILE_UPLOAD_MESSAGE", "Upload a file"
+    "ENABLED_FILE_UPLOAD_MESSAGE", "ファイルのアップロード"
 )
 azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
 azure_openai_key = os.environ.get("AZURE_OPENAI_KEY")
@@ -65,7 +65,7 @@ class EventHandler(AssistantEventHandler):
     @override
     def on_text_created(self, text):
         st.session_state.current_message = ""
-        with st.chat_message("Assistant"):
+        with st.chat_message("Assistant",avatar=setAvatar("assistant")):
             st.session_state.current_markdown = st.empty()
 
     @override
@@ -83,25 +83,25 @@ class EventHandler(AssistantEventHandler):
     def on_text_done(self, text):
         format_text = format_annotation(text)
         st.session_state.current_markdown.markdown(format_text, True)
-        st.session_state.chat_log.append({"name": "assistant", "msg": format_text})
+        st.session_state.chat_log.append({"name": "assistant", "msg": format_text,"avatar":setAvatar("assistant")})
 
     @override
     def on_tool_call_created(self, tool_call):
         if tool_call.type == "code_interpreter":
             st.session_state.current_tool_input = ""
-            with st.chat_message("Assistant"):
+            with st.chat_message("Assistant",avatar=setAvatar("assistant")):
                 st.session_state.current_tool_input_markdown = st.empty()
 
     @override
     def on_tool_call_delta(self, delta, snapshot):
         if 'current_tool_input_markdown' not in st.session_state:
-            with st.chat_message("Assistant"):
+            with st.chat_message("Assistant",avatar=setAvatar("assistant")):
                 st.session_state.current_tool_input_markdown = st.empty()
 
         if delta.type == "code_interpreter":
             if delta.code_interpreter.input:
                 st.session_state.current_tool_input += delta.code_interpreter.input
-                input_code = f"### code interpreter\ninput:\n```python\n{st.session_state.current_tool_input}\n```"
+                input_code = f"### コード生成中...\n```python\n{st.session_state.current_tool_input}\n```"
                 st.session_state.current_tool_input_markdown.markdown(input_code, True)
 
             if delta.code_interpreter.outputs:
@@ -116,13 +116,12 @@ class EventHandler(AssistantEventHandler):
             st.session_state["image_shown"] = set()
 
         for output in tool_call.code_interpreter.outputs:
-            if output.type == "image":  # `image`として認識される場合
+            if output.type == "image":
                 file_id = output.image.file_id
 
                 # 画像が既に表示されている場合はスキップ
                 if file_id in st.session_state["image_shown"]:
                     continue
-
                 try:
                     # ファイルを取得
                     file_content = client.files.content(file_id)
@@ -137,7 +136,7 @@ class EventHandler(AssistantEventHandler):
                     )
 
                     # チャットUIに画像を表示
-                    with st.chat_message("Assistant"):
+                    with st.chat_message("Assistant",avatar=setAvatar("assistant")):
                         st.image(image, caption="Generated Visualization")
 
                     # 表示済みの画像IDを記録
@@ -146,6 +145,13 @@ class EventHandler(AssistantEventHandler):
                 except Exception as e:
                     st.write(f"Error processing image: {e}")
 
+def setAvatar(name):
+    if name == "user":
+        return "assets/user_icon.png"
+    if name == "assistant":
+        return "assets/assistant_icon.png"
+    else:
+        return None
 
 def create_thread(content, file):
     return client.beta.threads.create()
@@ -161,21 +167,15 @@ def create_message(thread, content, file):
         thread_id=thread.id, role="user", content=content, attachments=attachments
     )
 
-
 def create_file_link(file_name, file_id):
     # ファイルの内容を取得
     file_content = client.files.content(file_id)
     file_bytes = file_content.read()
 
-    # MIMEタイプを推定
     mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
-
-    # Base64エンコード
     b64 = base64.b64encode(file_bytes).decode()
 
-    # ダウンロードリンクを生成
     return f'<a href="data:{mime_type};base64,{b64}" download="{file_name}">Download {file_name}</a>'
-
 
 
 def format_annotation(text):
@@ -209,22 +209,33 @@ def run_stream(user_input, file, selected_assistant_id):
         event_handler=EventHandler(),
     ) as stream:
         stream.until_done()
-    
+
 def handle_uploaded_file(uploaded_file):
+    if "uploaded_files" not in st.session_state:
+        st.session_state["uploaded_files"] = []
+
+    for uploaded in st.session_state["uploaded_files"]:
+        if uploaded["name"] == uploaded_file.name:
+            #st.write("同じ名前のファイルがアップロードされました。ファイルの名前を変更して下さい。: ", uploaded_file.name)
+            return None  # Return None if a file with the same name already exists
+
+    # Upload and add to session state
     file = client.files.create(file=uploaded_file, purpose="assistants")
+    st.session_state["uploaded_files"].append({"id": file.id, "name": uploaded_file.name})
     return file
+
 
 def render_chat():
     for idx, chat in enumerate(st.session_state.chat_log):
-        with st.chat_message(chat["name"]):
+        with st.chat_message(chat["name"], avatar=setAvatar(chat["name"])):
             if "image" in chat:
                 # チャットログ内で画像を一度だけ描画
                 if chat.get("image_shown", False):
                     continue
                 st.image(chat["image"], use_column_width=True, caption="Generated Visualization")
-                chat["image_shown"] = True  # 表示済みフラグを設定
             else:
                 st.markdown(chat["msg"], True)
+
 
 
 if "tool_call" not in st.session_state:
@@ -270,20 +281,22 @@ def load_chat_screen(assistant_id, assistant_title):
         )
     else:
         uploaded_file = None
-
+    
     st.title(assistant_title if assistant_title else "")
     user_msg = st.chat_input(
         "Message", on_submit=disable_form, disabled=st.session_state.in_progress
     )
     if user_msg:
         render_chat()
-        with st.chat_message("user"):
+        with st.chat_message("user",avatar=setAvatar("user")):
             st.markdown(user_msg, True)
         st.session_state.chat_log.append({"name": "user", "msg": user_msg})
 
         file = None
-        if uploaded_file is not None:
+        if uploaded_file is not None and "uploaded_file_id" not in st.session_state:
             file = handle_uploaded_file(uploaded_file)
+        else:
+            file = None
         run_stream(user_msg, file, assistant_id)
         st.session_state.in_progress = False
         st.session_state.tool_call = None
@@ -297,7 +310,7 @@ def main():
     multi_agents = os.environ.get("OPENAI_ASSISTANTS", None)
     single_agent_id = os.environ.get("ASSISTANT_ID", None)
     single_agent_title = os.environ.get("ASSISTANT_TITLE", "Assistants API UI")
-
+    
     if (
         authentication_required
         and "credentials" in st.secrets
